@@ -46,15 +46,14 @@ end
 local elixir_view_module_docs
 
 local function elixir_view_export_docs(export, opts)
-  local buf = vim.api.nvim_create_buf(true, false)
-  vim.api.nvim_win_set_buf(0, buf)
   local command = "h"
   if string.match(export, "^@") then
     export = string.sub(export, 2)
     command = "b"
   end
-  vim.fn.termopen(table.concat(elixir_pa_flags(opts, {
+  vim.cmd(":FloatermNew --autoclose=0 " .. table.concat(elixir_pa_flags(opts, {
     " -e 'require IEx.Helpers; IEx.Helpers." .. command .. "(" .. export .. ")'"}), " "))
+  vim.cmd(":exec 'normal! i'")
 end
 
 local function telescope_view_module_docs(exports, opts, action)
