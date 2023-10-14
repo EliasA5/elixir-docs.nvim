@@ -16,7 +16,7 @@ local function get_extra_mix_folders(opts)
 
     local base_path = './_build/test/lib/'
     local sd = vim.loop.fs_scandir(base_path)
-    while sd ~= nil and true do
+    while sd ~= nil do
       local name, type = vim.loop.fs_scandir_next(sd)
       if name == nil then break end
       if not processed_libs[name] then
