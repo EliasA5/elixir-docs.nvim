@@ -44,6 +44,7 @@ end
 
 -- https://stackoverflow.com/a/52521017/516188
 local elixir_view_module_docs
+ELIXIR_DOCS_CACHE = {}
 
 local function elixir_view_export_docs(export, opts)
   local command = "h"
@@ -118,77 +119,88 @@ local function telescope_view_module_docs(exports, opts, action)
 end
 
 local function elixir_view_behaviour_module_docs(mod, exports, opts)
-  vim.fn.jobstart(elixir_pa_flags(opts, { "-e", "require IEx.Helpers; IEx.Helpers.b(" .. mod .. ")" }), {
-    cwd='.',
-    stdout_buffered = true,
-    on_stdout = vim.schedule_wrap(function(j, output)
-      local cur_callback_name = nil
-      local cur_callback_param_count = 0
-      local is_opening_bracket = false
-      for _, line in ipairs(output) do
-        if cur_callback_name == nil then
-          if string.match(line, "^@callback ") then
-            local end_idx = string.find(line, "%(")
-            cur_callback_name = string.sub(line, 11, end_idx-1)
-            if string.sub(line, end_idx+1, end_idx+1) == ')' then
-              cur_callback_param_count = 0
-              goto insert_callback
-            elseif end_idx == #line then
-              cur_callback_param_count = 0
+  if ELIXIR_DOCS_CACHE[mod .. "_b"] == nil then
+    vim.fn.jobstart(elixir_pa_flags(opts, { "-e", "require IEx.Helpers; IEx.Helpers.b(" .. mod .. ")" }), {
+      cwd='.',
+      stdout_buffered = true,
+      on_stdout = vim.schedule_wrap(function(j, output)
+        local cur_callback_name = nil
+        local cur_callback_param_count = 0
+        local is_opening_bracket = false
+        for _, line in ipairs(output) do
+          if cur_callback_name == nil then
+            if string.match(line, "^@callback ") then
+              local end_idx = string.find(line, "%(")
+              cur_callback_name = string.sub(line, 11, end_idx-1)
+              if string.sub(line, end_idx+1, end_idx+1) == ')' then
+                cur_callback_param_count = 0
+                goto insert_callback
+              elseif end_idx == #line then
+                cur_callback_param_count = 0
+                goto skip_to_next
+              else
+                cur_callback_param_count = 1
+              end
+              for idx = end_idx, #line do
+                local char = string.sub(line, idx, idx)
+                if char == ',' then
+                  cur_callback_param_count = cur_callback_param_count + 1
+                elseif not is_opening_bracket and char == ')' then
+                  goto insert_callback
+                end
+                is_opening_bracket = char == '('
+              end
+            end
+          else
+            if string.match(line, ",$") then
+              cur_callback_param_count = cur_callback_param_count + 1
               goto skip_to_next
             else
-              cur_callback_param_count = 1
-            end
-            for idx = end_idx, #line do
-              local char = string.sub(line, idx, idx)
-              if char == ',' then
-                cur_callback_param_count = cur_callback_param_count + 1
-              elseif not is_opening_bracket and char == ')' then
-                goto insert_callback
-              end
-              is_opening_bracket = char == '('
+              -- that was the last parameter
+              cur_callback_param_count = cur_callback_param_count + 1
             end
           end
-        else
-          if string.match(line, ",$") then
-            cur_callback_param_count = cur_callback_param_count + 1
-            goto skip_to_next
-          else
-            -- that was the last parameter
-            cur_callback_param_count = cur_callback_param_count + 1
+          ::insert_callback::
+          if cur_callback_name ~= nil then
+            table.insert(exports, "@" .. mod .. "." .. cur_callback_name .. "/" .. cur_callback_param_count)
+            cur_callback_name = nil
           end
+          ::skip_to_next::
         end
-        ::insert_callback::
-        if cur_callback_name ~= nil then
-          table.insert(exports, "@" .. mod .. "." .. cur_callback_name .. "/" .. cur_callback_param_count)
-          cur_callback_name = nil
-        end
-        ::skip_to_next::
-      end
-    end),
-    on_exit = vim.schedule_wrap(function(j, output)
-      telescope_view_module_docs(exports, opts)
-    end)
-  })
+      end),
+      on_exit = vim.schedule_wrap(function(j, output)
+        ELIXIR_DOCS_CACHE[mod .. "_b"] = exports
+        telescope_view_module_docs(exports, opts)
+      end)
+    })
+  else
+    telescope_view_module_docs(ELIXIR_DOCS_CACHE[mod .. "_b"], opts)
+  end
 end
 
 function elixir_view_module_docs(mod, opts)
-  local exports = {mod}
-  -- https://stackoverflow.com/questions/52670918
-  vim.fn.jobstart(elixir_pa_flags(opts, { "-e", "require IEx.Helpers; IEx.Helpers.exports(" .. mod .. ")" }), {
-    cwd='.',
-    stdout_buffered = true,
-    on_stdout = vim.schedule_wrap(function(j, output)
-      for _, line in ipairs(output) do
-        for export in string.gmatch(line, "([^%s]+)") do
-          table.insert(exports, mod .. "." .. export)
+  local name = mod .. "_exports"
+  if ELIXIR_DOCS_CACHE[name] == nil then
+    local exports = {mod}
+    -- https://stackoverflow.com/questions/52670918
+    vim.fn.jobstart(elixir_pa_flags(opts, { "-e", "require IEx.Helpers; IEx.Helpers.exports(" .. mod .. ")" }), {
+      cwd='.',
+      stdout_buffered = true,
+      on_stdout = vim.schedule_wrap(function(j, output)
+        for _, line in ipairs(output) do
+          for export in string.gmatch(line, "([^%s]+)") do
+            table.insert(exports, mod .. "." .. export)
+          end
         end
-      end
-    end),
-    on_exit = vim.schedule_wrap(function(j, output)
-      elixir_view_behaviour_module_docs(mod, exports, opts)
-    end)
-  })
+      end),
+      on_exit = vim.schedule_wrap(function(j, output)
+        ELIXIR_DOCS_CACHE[name] = exports
+        elixir_view_behaviour_module_docs(mod, exports, opts)
+      end)
+    })
+  else
+    elixir_view_behaviour_module_docs(mod, ELIXIR_DOCS_CACHE[mod .. "_exports"], opts)
+  end
 end
 
 local function elixir_append_modules_in_folder(modules, folder)
@@ -212,58 +224,70 @@ local function elixir_append_modules_in_folder(modules, folder)
 end
 
 local function elixir_view_docs_with_runtime_folders(runtime_module_folders, opts)
-  local modules = {}
-  for _, folder in ipairs(runtime_module_folders) do
-    elixir_append_modules_in_folder(modules, folder)
+
+  if ELIXIR_DOCS_CACHE["modules"] == nil then
+    local modules = {}
+    for _, folder in ipairs(runtime_module_folders) do
+      elixir_append_modules_in_folder(modules, folder)
+    end
+    local extra_mix_folders = get_extra_mix_folders(opts)
+    for _, folder in ipairs(extra_mix_folders) do
+      elixir_append_modules_in_folder(modules, folder)
+    end
+    -- https://stackoverflow.com/questions/58461572/get-a-list-of-all-elixir-modules-in-iex#comment103267199_58462672
+    -- vim.fn.jobstart(elixir_pa_flags({ "-e", ":erlang.loaded() |> Enum.sort() |> inspect(limit: :infinity) |> IO.puts" }), {
+      -- https://github.com/elixir-lang/elixir/blob/60f86886c0f66c71790e61d754eada4e9fa0ace5/lib/iex/lib/iex/autocomplete.ex#L507
+      vim.fn.jobstart(elixir_pa_flags(opts, { "-e", ":application.get_key(:elixir, :modules) |> elem(1) |> Enum.each(&(IO.inspect(&1) |> IO.puts()))" }), {
+        cwd='.',
+        stdout_buffered = true,
+        on_stdout = vim.schedule_wrap(function(j, output)
+          for _,mod in ipairs(output) do
+            if mod:match("^[A-Z]") then
+              table.insert(modules, mod)
+            end
+          end
+        end),
+        on_exit = vim.schedule_wrap(function(j, output)
+          table.sort(modules)
+          ELIXIR_DOCS_CACHE["modules"] = modules
+          telescope_view_module_docs(modules, opts, "view_telescope_module")
+        end)
+      })
+  else
+    telescope_view_module_docs(ELIXIR_DOCS_CACHE["modules"], opts, "view_telescope_module")
   end
-  local extra_mix_folders = get_extra_mix_folders(opts)
-  for _, folder in ipairs(extra_mix_folders) do
-    elixir_append_modules_in_folder(modules, folder)
-  end
-  -- https://stackoverflow.com/questions/58461572/get-a-list-of-all-elixir-modules-in-iex#comment103267199_58462672
-  -- vim.fn.jobstart(elixir_pa_flags({ "-e", ":erlang.loaded() |> Enum.sort() |> inspect(limit: :infinity) |> IO.puts" }), {
-  -- https://github.com/elixir-lang/elixir/blob/60f86886c0f66c71790e61d754eada4e9fa0ace5/lib/iex/lib/iex/autocomplete.ex#L507
-  vim.fn.jobstart(elixir_pa_flags(opts, { "-e", ":application.get_key(:elixir, :modules) |> inspect(limit: :infinity) |> IO.puts" }), {
-    cwd='.',
-    stdout_buffered = true,
-    on_stdout = vim.schedule_wrap(function(j, output)
-      for mod in string.gmatch(output[1], "([^,%s%[%]]+)") do
-        if mod:match("^[A-Z]") then
-          table.insert(modules, mod)
-        end
-      end
-    end),
-    on_exit = vim.schedule_wrap(function(j, output)
-      table.sort(modules)
-      telescope_view_module_docs(modules, opts, "view_telescope_module")
-    end)
-  })
 end
 
 local function elixir_view_docs(opts)
   -- get some builtin module paths. These modules are in the load path, but may
   -- not be loaded, but we want the docs for them. ExUnit and Logger are examples
   -- of modules for which we need this.
-  local module_paths = {}
-  vim.fn.jobstart({
-    "elixir", "-e", [[
+  if ELIXIR_DOCS_CACHE["module_paths"] == nil then
+    local module_paths = {}
+    vim.fn.jobstart({
+      "elixir", "-e", [[
       :code.get_path()
       |> Enum.filter(fn p -> String.contains?(inspect(p), "elixir") && !String.contains?(inspect(p), ["/mix/", "/iex/", "elixir/ebin", "eex/ebin"]) end)
       |> IO.inspect()
-    ]]
-  }, {
-    cwd='.',
-    stdout_buffered = true,
-    on_stdout = vim.schedule_wrap(function(j, output)
-      for mod in string.gmatch(table.concat(output), "'([^,%s%[%]]+)'") do
-        table.insert(module_paths, mod)
-      end
-    end),
-    on_exit = vim.schedule_wrap(function(j, output)
-      table.sort(module_paths)
-      elixir_view_docs_with_runtime_folders(module_paths, opts)
-    end),
-  })
+      ]]
+    }, {
+      cwd='.',
+      stdout_buffered = true,
+      on_stdout = vim.schedule_wrap(function(j, output)
+        for mod in string.gmatch(table.concat(output), "'([^,%s%[%]]+)'") do
+          table.insert(module_paths, mod)
+        end
+      end),
+      on_exit = vim.schedule_wrap(function(j, output)
+        table.sort(module_paths)
+        ELIXIR_DOCS_CACHE["module_paths"] = module_paths
+        elixir_view_docs_with_runtime_folders(module_paths, opts)
+      end),
+    })
+  else
+    elixir_view_docs_with_runtime_folders(ELIXIR_DOCS_CACHE["module_paths"], opts)
+  end
+
 end
 
 return {
