@@ -242,7 +242,7 @@ local function elixir_view_docs_with_runtime_folders(runtime_module_folders, opt
         stdout_buffered = true,
         on_stdout = vim.schedule_wrap(function(j, output)
           for _,mod in ipairs(output) do
-            if mod:match("^[A-Z]") then
+            if mod:match("^[A-Z]") and not mod:match("Error$") then
               table.insert(modules, mod)
             end
           end
